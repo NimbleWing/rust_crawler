@@ -67,7 +67,7 @@ fn default_output_file() -> String { DEFAULT_OUTPUT_FILE.to_string() }
 
 fn load_config() -> Config {
     let config_path = "config.toml";
-    match std::fs::read_to_string(config_path) {
+    let config = match std::fs::read_to_string(config_path) {
         Ok(content) => {
             match toml::from_str(&content) {
                 Ok(config) => {
@@ -84,7 +84,26 @@ fn load_config() -> Config {
             println!("{} 未找到 config.toml，使用默认配置", get_timestamp());
             Config::default()
         }
-    }
+    };
+    print_config(&config);
+    config
+}
+
+fn print_config(config: &Config) {
+    println!("{} =========================================", get_timestamp());
+    println!("{} 当前配置:", get_timestamp());
+    println!("{}   [crawl]", get_timestamp());
+    println!("{}     concurrent_limit = {}", get_timestamp(), config.crawl.concurrent_limit);
+    println!("{}   [urls]", get_timestamp());
+    println!("{}     base_url = {}", get_timestamp(), config.urls.base_url);
+    println!("{}     catalog_url = {}", get_timestamp(), config.urls.catalog_url);
+    println!("{}   [selectors]", get_timestamp());
+    println!("{}     title_selector = {}", get_timestamp(), config.selectors.title_selector);
+    println!("{}     content_selector = {}", get_timestamp(), config.selectors.content_selector);
+    println!("{}     chapter_link_selector = {}", get_timestamp(), config.selectors.chapter_link_selector);
+    println!("{}   [output]", get_timestamp());
+    println!("{}     file = {}", get_timestamp(), config.output.file);
+    println!("{} =========================================", get_timestamp());
 }
 
 impl Default for Config {
