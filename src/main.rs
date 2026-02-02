@@ -4,6 +4,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Semaphore;
+use tokio::time::{timeout, Duration};
 
 fn get_timestamp() -> String {
     let now = chrono::Local::now();
@@ -206,28 +207,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut success_count = 0;
     let mut fail_count = 0;
 
-    while let Some(result) = rx.recv().await {
-        result.log();
-        chapter_results.push(result);
-        pending_count -= 1;
-        if pending_count % 50 == 0 {
-            println!("{} 剩余 {} 章待处理...", get_timestamp(), pending_count);
+    println!("{} 等待爬取结果...", get_timestamp());
+    let mut waiting_time = 0;
+    while pending_count > 0 {
+        match timeout(Duration::from_secs(30), rx.recv()).await {
+            Ok(Some(result)) => {
+                result.log();
+                chapter_results.push(result);
+                pending_count -= 1;
+                waiting_time = 0;
+                if pending_count % 100 == 0 && pending_count > 0 {
+                    println!("{} 剩余 {} 章待处理...", get_timestamp(), pending_count);
+                }
+            }
+            Ok(None) => {
+                println!("{} 通道已关闭，但还有 {} 章未完成", get_timestamp(), pending_count);
+                break;
+            }
+            Err(_) => {
+                waiting_time += 30;
+                println!("{} 等待超时 ({}s)，剩余 {} 章...", get_timestamp(), waiting_time, pending_count);
+                if waiting_time > 300 {
+                    println!("{} 等待时间过长，放弃等待未完成的章节", get_timestamp());
+                    break;
+                }
+            }
         }
     }
+    println!("{} 所有结果已接收 (共 {} 章)，开始写入文件...", get_timestamp(), chapter_results.len());
 
     chapter_results.sort_by_key(|r| r.index);
-    for result in &chapter_results {
+    let write_start = Instant::now();
+    println!("{} 开始写入 {} 章到文件...", get_timestamp(), chapter_results.len());
+
+    for (i, result) in chapter_results.iter().enumerate() {
         if result.success {
             let chapter = Chapter {
                 title: result.title.clone(),
                 content: result.content.clone(),
             };
-            crawler.write_chapter(&chapter, result.index + 1)?;
-            success_count += 1;
+            match crawler.write_chapter(&chapter, result.index + 1) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    eprintln!("{} 第{}章写入失败: {}", get_timestamp(), result.index + 1, e);
+                    fail_count += 1;
+                }
+            }
         } else {
             fail_count += 1;
         }
+        if (i + 1) % 100 == 0 {
+            println!("{} 已写入 {}/{} 章...", get_timestamp(), i + 1, chapter_results.len());
+        }
     }
+    let write_duration = write_start.elapsed().as_millis();
+    println!("{} 文件写入完成 ({}ms)", get_timestamp(), write_duration);
 
     let total_duration = start_time.elapsed();
     let total_secs = total_duration.as_secs();
