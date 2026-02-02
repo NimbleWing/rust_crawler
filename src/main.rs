@@ -5,6 +5,105 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
+use serde::Deserialize;
+
+const DEFAULT_CONCURRENT_LIMIT: usize = 15;
+const DEFAULT_BASE_URL: &str = "https://www.alicesw.com/";
+const DEFAULT_CATALOG_URL: &str = "https://www.alicesw.com/other/chapters/id/47686.html";
+const DEFAULT_OUTPUT_FILE: &str = "output.txt";
+const DEFAULT_TITLE_SELECTOR: &str = ".j_chapterName";
+const DEFAULT_CONTENT_SELECTOR: &str = ".read-content p";
+const DEFAULT_CHAPTER_LINK_SELECTOR: &str = ".mulu_list li a";
+
+#[derive(Debug, Deserialize)]
+struct Config {
+    #[serde(default)]
+    crawl: CrawlConfig,
+    #[serde(default)]
+    urls: UrlsConfig,
+    #[serde(default)]
+    selectors: SelectorsConfig,
+    #[serde(default)]
+    output: OutputConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CrawlConfig {
+    #[serde(default = "default_concurrent_limit")]
+    concurrent_limit: usize,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct UrlsConfig {
+    #[serde(default = "default_base_url")]
+    base_url: String,
+    #[serde(default = "default_catalog_url")]
+    catalog_url: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SelectorsConfig {
+    #[serde(default = "default_title_selector")]
+    title_selector: String,
+    #[serde(default = "default_content_selector")]
+    content_selector: String,
+    #[serde(default = "default_chapter_link_selector")]
+    chapter_link_selector: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OutputConfig {
+    #[serde(default = "default_output_file")]
+    file: String,
+}
+
+fn default_concurrent_limit() -> usize { DEFAULT_CONCURRENT_LIMIT }
+fn default_base_url() -> String { DEFAULT_BASE_URL.to_string() }
+fn default_catalog_url() -> String { DEFAULT_CATALOG_URL.to_string() }
+fn default_title_selector() -> String { DEFAULT_TITLE_SELECTOR.to_string() }
+fn default_content_selector() -> String { DEFAULT_CONTENT_SELECTOR.to_string() }
+fn default_chapter_link_selector() -> String { DEFAULT_CHAPTER_LINK_SELECTOR.to_string() }
+fn default_output_file() -> String { DEFAULT_OUTPUT_FILE.to_string() }
+
+fn load_config() -> Config {
+    let config_path = "config.toml";
+    match std::fs::read_to_string(config_path) {
+        Ok(content) => {
+            match toml::from_str(&content) {
+                Ok(config) => {
+                    println!("{} 已加载配置文件", get_timestamp());
+                    config
+                }
+                Err(e) => {
+                    eprintln!("{} 配置文件解析失败，使用默认配置: {}", get_timestamp(), e);
+                    Config::default()
+                }
+            }
+        }
+        Err(_) => {
+            println!("{} 未找到 config.toml，使用默认配置", get_timestamp());
+            Config::default()
+        }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            crawl: CrawlConfig { concurrent_limit: DEFAULT_CONCURRENT_LIMIT },
+            urls: UrlsConfig {
+                base_url: DEFAULT_BASE_URL.to_string(),
+                catalog_url: DEFAULT_CATALOG_URL.to_string(),
+            },
+            selectors: SelectorsConfig {
+                title_selector: DEFAULT_TITLE_SELECTOR.to_string(),
+                content_selector: DEFAULT_CONTENT_SELECTOR.to_string(),
+                chapter_link_selector: DEFAULT_CHAPTER_LINK_SELECTOR.to_string(),
+            },
+            output: OutputConfig { file: DEFAULT_OUTPUT_FILE.to_string() },
+        }
+    }
+}
 
 fn get_timestamp() -> String {
     let now = chrono::Local::now();
@@ -60,15 +159,6 @@ impl ChapterResult {
     }
 }
 
-const CONCURRENT_LIMIT: usize = 15;
-
-const BASE_URL: &str = "https://www.alicesw.com/";
-const CATALOG_URL: &str = "https://www.alicesw.com/other/chapters/id/47686.html";
-const OUTPUT_FILE: &str = "output.txt";
-const TITLE_SELECTOR: &str = ".j_chapterName";
-const CONTENT_SELECTOR: &str = ".read-content p";
-const CHAPTER_LINK_SELECTOR: &str = ".mulu_list li a";
-
 static USER_AGENTS: &[&str] = &[
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -88,9 +178,9 @@ struct Crawler {
 }
 
 impl Crawler {
-    fn new(output_file: File) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(output_file: File, concurrent_limit: usize) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            semaphore: Arc::new(Semaphore::new(CONCURRENT_LIMIT)),
+            semaphore: Arc::new(Semaphore::new(concurrent_limit)),
             output_file,
         })
     }
@@ -117,8 +207,18 @@ struct Chapter {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Instant::now();
-    let output_file = File::create(OUTPUT_FILE)?;
-    let mut crawler = Crawler::new(output_file)?;
+
+    let config = load_config();
+    let concurrent_limit = config.crawl.concurrent_limit;
+    let base_url = &config.urls.base_url;
+    let catalog_url = &config.urls.catalog_url;
+    let title_selector = &config.selectors.title_selector;
+    let content_selector = &config.selectors.content_selector;
+    let chapter_link_selector = &config.selectors.chapter_link_selector;
+    let output_file_path = &config.output.file;
+
+    let output_file = File::create(output_file_path)?;
+    let mut crawler = Crawler::new(output_file, concurrent_limit)?;
     let client = reqwest::Client::new();
     let client_arc = Arc::new(client);
 
@@ -126,7 +226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let catalog_start = Instant::now();
     let catalog_html = {
         let ua = USER_AGENTS.choose(&mut rand::thread_rng()).unwrap_or(&USER_AGENTS[0]);
-        client_arc.get(CATALOG_URL)
+        client_arc.get(catalog_url)
             .header("User-Agent", ua.to_string())
             .send()
             .await?.text().await?
@@ -134,25 +234,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let catalog_duration = catalog_start.elapsed().as_millis();
     let chapter_urls = {
         let document = scraper::Html::parse_document(&catalog_html);
-        document.select(&scraper::Selector::parse(CHAPTER_LINK_SELECTOR).unwrap())
+        document.select(&scraper::Selector::parse(chapter_link_selector).unwrap())
             .filter_map(|a| a.value().attr("href"))
             .map(|href| {
                 if href.starts_with("http") {
                     href.to_string()
                 } else {
-                    format!("{}{}", BASE_URL, href.trim_start_matches('/'))
+                    format!("{}{}", base_url, href.trim_start_matches('/'))
                 }
             })
             .collect::<Vec<_>>()
     };
     let total_chapters = chapter_urls.len();
     println!("{} 章节列表获取成功，共 {} 章 ({}ms)", get_timestamp(), total_chapters, catalog_duration);
-    println!("{} 开始并发爬取（并发数: {}）", get_timestamp(), CONCURRENT_LIMIT);
+    println!("{} 开始并发爬取（并发数: {}）", get_timestamp(), concurrent_limit);
 
     let chapter_urls_arc = Arc::new(chapter_urls);
     let semaphore_arc = crawler.semaphore.clone();
-    let title_sel = scraper::Selector::parse(TITLE_SELECTOR).unwrap();
-    let content_sel = scraper::Selector::parse(CONTENT_SELECTOR).unwrap();
+    let title_sel = scraper::Selector::parse(title_selector).unwrap();
+    let content_sel = scraper::Selector::parse(content_selector).unwrap();
     let mut tasks = Vec::new();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ChapterResult>(total_chapters);
 
@@ -273,7 +373,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{} 总章节: {} | 成功: {} | 失败: {}", get_timestamp(), total_chapters, success_count, fail_count);
     println!("{} 总耗时: {}h{}m{}s", get_timestamp(), hours, minutes, seconds);
     println!("{} 平均每章: {}ms", get_timestamp(), if success_count > 0 { total_duration.as_millis() as u64 / success_count as u64 } else { 0 });
-    println!("{} 输出文件: {}", get_timestamp(), OUTPUT_FILE);
+    println!("{} 输出文件: {}", get_timestamp(), output_file_path);
     println!("{} =========================================", get_timestamp());
     Ok(())
 }

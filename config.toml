@@ -1,0 +1,27 @@
+# 爬虫配置文件
+# 不存在的配置项将使用默认值
+
+[crawl]
+# 并发爬取数量，默认15
+concurrent_limit = 15
+
+[urls]
+# 基础URL，默认 https://www.alicesw.com/
+base_url = "https://www.alicesw.com/"
+
+# 章节汇总页面URL
+catalog_url = "https://www.alicesw.com/other/chapters/id/47686.html"
+
+[selectors]
+# 章节标题CSS选择器，默认 .j_chapterName
+title_selector = ".j_chapterName"
+
+# 正文内容CSS选择器，默认 .read-content p
+content_selector = ".read-content p"
+
+# 章节链接CSS选择器，默认 .mulu_list li a
+chapter_link_selector = ".mulu_list li a"
+
+[output]
+# 输出文件名，默认 output.txt
+file = "output.txt"

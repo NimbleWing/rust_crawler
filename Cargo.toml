@@ -10,3 +10,5 @@ scraper ={ version = "0.25.0"}
 rand = "0.8"
 futures = "0.3"
 chrono = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
