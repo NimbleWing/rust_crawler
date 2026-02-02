@@ -1,85 +1,130 @@
+use rand::seq::SliceRandom;
 use std::fs::File;
 use std::io::Write;
-use rand::Rng;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let resp = reqwest::Client::new()
-        .get("https://www.alicesw.com/book/49017/b914f17bebada.html")
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
-        .send()
-        .await?
-        .text()
-        .await?;
-    let document = scraper::Html::parse_document(&resp);
-    let selector = scraper::Selector::parse(r#".j_chapterName"#).unwrap();
-    let title = document.select(&selector).next().unwrap();
-    let chapter_title = title.text().collect::<Vec<_>>().join("");
-    println!("{}", chapter_title);
-    let content_selector = scraper::Selector::parse(r#".read-content p"#).unwrap();
-    let next_link_selector = scraper::Selector::parse(r#"#j_chapterNext"#).unwrap();
-    let mut file = File::create("output.txt")?;
-    let mut current_url = "https://www.alicesw.com/book/49017/b914f17bebada.html".to_string();
-    let base_url = "https://www.alicesw.com".to_string();
-    let mut chapter_count = 0;
-    let user_agents = vec![
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Edge/119.0.0.0",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    ];
-    let mut rng = rand::thread_rng();
-    loop {
-        let random_ua = user_agents[rng.gen_range(0..user_agents.len())];
-        let resp = reqwest::Client::new()
-            .get(&current_url)
-            .header("User-Agent", random_ua)
+const BASE_URL: &str = "https://www.alicesw.com";
+const START_URL: &str = "https://www.alicesw.com/book/49017/b914f17bebada.html";
+const OUTPUT_FILE: &str = "output.txt";
+const TITLE_SELECTOR: &str = ".j_chapterName";
+const CONTENT_SELECTOR: &str = ".read-content p";
+const NEXT_LINK_SELECTOR: &str = "#j_chapterNext";
+
+static USER_AGENTS: &[&str] = &[
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Edge/119.0.0.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+];
+
+struct Crawler {
+    client: reqwest::Client,
+    title_selector: scraper::Selector,
+    content_selector: scraper::Selector,
+    next_link_selector: scraper::Selector,
+    output_file: File,
+}
+
+impl Crawler {
+    fn new(output_file: File) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            client: reqwest::Client::new(),
+            title_selector: scraper::Selector::parse(TITLE_SELECTOR)?,
+            content_selector: scraper::Selector::parse(CONTENT_SELECTOR)?,
+            next_link_selector: scraper::Selector::parse(NEXT_LINK_SELECTOR)?,
+            output_file,
+        })
+    }
+
+    fn random_user_agent(&self) -> &'static str {
+        USER_AGENTS.choose(&mut rand::thread_rng()).unwrap_or(&USER_AGENTS[0])
+    }
+
+    async fn fetch_page(&self, url: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let ua = self.random_user_agent();
+        let resp = self.client
+            .get(url)
+            .header("User-Agent", ua)
             .send()
             .await?
             .text()
             .await?;
-        let document = scraper::Html::parse_document(&resp);
-        let title = document.select(&selector).next().unwrap();
-        let chapter_title = title.text().collect::<Vec<_>>().join("");
-        println!("第{}章: {}", chapter_count + 1, chapter_title);
-        let mut output = String::new();
-        output.push_str(&chapter_title);
-        output.push('\n');
-        let paragraphs: Vec<_> = document.select(&content_selector).collect();
-        for paragraph in paragraphs {
-            let text = paragraph.text().collect::<Vec<_>>().join("");
-            if !text.is_empty() {
-                output.push_str(&text);
-                output.push('\n');
-            }
-        }
-        file.write_all(output.as_bytes())?;
-        chapter_count += 1;
-        let next_link = document.select(&next_link_selector).next();
-        match next_link {
-            Some(next) => {
-                if let Some(href) = next.value().attr("href") {
-                    if href.starts_with("http") {
-                        current_url = href.to_string();
-                    } else {
-                        current_url = base_url.clone() + href;
-                    }
-                } else {
-                    break;
-                }
-            }
-            None => {
-                break;
-            }
-        }
-        // tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        Ok(resp)
     }
-    println!("共爬取{}章内容，已写入output.txt", chapter_count);
+
+    fn parse_chapter(&self, html: &str) -> Result<Chapter, Box<dyn std::error::Error>> {
+        let document = scraper::Html::parse_document(html);
+        let title_element = document.select(&self.title_selector).next()
+            .ok_or("Chapter title not found")?;
+        let chapter_title = title_element.text().collect::<Vec<_>>().join("");
+
+        let paragraphs: Vec<String> = document.select(&self.content_selector)
+            .filter_map(|p| {
+                let text = p.text().collect::<Vec<_>>().join("");
+                if !text.is_empty() { Some(text) } else { None }
+            })
+            .collect();
+
+        Ok(Chapter { title: chapter_title, content: paragraphs })
+    }
+
+    fn get_next_url(&self, html: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        let document = scraper::Html::parse_document(html);
+        let next_link = document.select(&self.next_link_selector).next();
+
+        match next_link.and_then(|link| link.value().attr("href")) {
+            Some(href) => {
+                let url = if href.starts_with("http") {
+                    href.to_string()
+                } else {
+                    format!("{}{}", BASE_URL, href)
+                };
+                Ok(Some(url))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn write_chapter(&mut self, chapter: &Chapter, chapter_num: usize) -> Result<(), Box<dyn std::error::Error>> {
+        println!("第{}章: {}", chapter_num, chapter.title);
+        let mut output = String::new();
+        output.push_str(&chapter.title);
+        output.push('\n');
+        for para in &chapter.content {
+            output.push_str(para);
+            output.push('\n');
+        }
+        self.output_file.write_all(output.as_bytes())?;
+        Ok(())
+    }
+}
+
+struct Chapter {
+    title: String,
+    content: Vec<String>,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let output_file = File::create(OUTPUT_FILE)?;
+    let mut crawler = Crawler::new(output_file)?;
+    let mut current_url: Option<String> = Some(START_URL.to_string());
+    let mut chapter_count = 0;
+
+    while let Some(url) = current_url {
+        let html = crawler.fetch_page(&url).await?;
+        let chapter = crawler.parse_chapter(&html)?;
+        chapter_count += 1;
+        crawler.write_chapter(&chapter, chapter_count)?;
+
+        current_url = crawler.get_next_url(&html)?;
+    }
+
+    println!("共爬取{}章内容，已写入{}", chapter_count, OUTPUT_FILE);
     Ok(())
 }
