@@ -18,10 +18,11 @@ struct ChapterResult {
     success: bool,
     error_msg: Option<String>,
     duration_ms: u64,
+    completed_at: chrono::DateTime<chrono::Local>,
 }
 
 impl ChapterResult {
-    fn success(index: usize, title: String, url: String, content: Vec<String>, duration_ms: u64) -> Self {
+    fn success(index: usize, title: String, url: String, content: Vec<String>, duration_ms: u64, completed_at: chrono::DateTime<chrono::Local>) -> Self {
         ChapterResult {
             index,
             title,
@@ -30,10 +31,11 @@ impl ChapterResult {
             success: true,
             error_msg: None,
             duration_ms,
+            completed_at,
         }
     }
 
-    fn failure(index: usize, url: String, error_msg: String, duration_ms: u64) -> Self {
+    fn failure(index: usize, url: String, error_msg: String, duration_ms: u64, completed_at: chrono::DateTime<chrono::Local>) -> Self {
         ChapterResult {
             index,
             title: String::new(),
@@ -42,15 +44,17 @@ impl ChapterResult {
             success: false,
             error_msg: Some(error_msg),
             duration_ms,
+            completed_at,
         }
     }
 
     fn log(&self) {
         let idx = self.index + 1;
+        let timestamp = self.completed_at.format("[%H:%M:%S]").to_string();
         if self.success {
-            println!("{} [{}] 爬取成功: {} ({}ms)", get_timestamp(), idx, self.title, self.duration_ms);
+            println!("{} [{}] 爬取成功: {} ({}ms)", timestamp, idx, self.title, self.duration_ms);
         } else {
-            println!("{} [{}] 爬取失败: {} ({})", get_timestamp(), idx, self.url, self.error_msg.as_ref().unwrap_or(&String::new()));
+            println!("{} [{}] 爬取失败: {} ({})", timestamp, idx, self.url, self.error_msg.as_ref().unwrap_or(&String::new()));
         }
     }
 }
@@ -160,8 +164,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tx = tx.clone();
 
         let task = tokio::spawn(async move {
-            let task_start = Instant::now();
             let _permit = semaphore.acquire().await.unwrap();
+            let fetch_start = Instant::now();
+            let completed_at = chrono::Local::now();
             let ua = USER_AGENTS.choose(&mut rand::thread_rng()).unwrap_or(&USER_AGENTS[0]);
 
             let result = match client.get(&url)
@@ -182,14 +187,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if !text.is_empty() { Some(text) } else { None }
                                     })
                                     .collect();
-                                ChapterResult::success(index, chapter_title, url, paragraphs, task_start.elapsed().as_millis() as u64)
+                                ChapterResult::success(index, chapter_title, url, paragraphs, fetch_start.elapsed().as_millis() as u64, completed_at)
                             }
-                            None => ChapterResult::failure(index, url, "Chapter title not found".to_string(), task_start.elapsed().as_millis() as u64),
+                            None => ChapterResult::failure(index, url, "Chapter title not found".to_string(), fetch_start.elapsed().as_millis() as u64, completed_at),
                         }
                     }
-                    Err(e) => ChapterResult::failure(index, url, format!("Request failed: {}", e), task_start.elapsed().as_millis() as u64),
+                    Err(e) => ChapterResult::failure(index, url, format!("Request failed: {}", e), fetch_start.elapsed().as_millis() as u64, completed_at),
                 },
-                Err(e) => ChapterResult::failure(index, url, format!("Send failed: {}", e), task_start.elapsed().as_millis() as u64),
+                Err(e) => ChapterResult::failure(index, url, format!("Send failed: {}", e), fetch_start.elapsed().as_millis() as u64, completed_at),
             };
             let _ = tx.send(result).await;
         });
@@ -197,18 +202,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut chapter_results = Vec::new();
-    for _ in 0..total_chapters {
-        if let Some(result) = rx.recv().await {
-            chapter_results.push(result);
+    let mut pending_count = total_chapters;
+    let mut success_count = 0;
+    let mut fail_count = 0;
+
+    while let Some(result) = rx.recv().await {
+        result.log();
+        chapter_results.push(result);
+        pending_count -= 1;
+        if pending_count % 50 == 0 {
+            println!("{} 剩余 {} 章待处理...", get_timestamp(), pending_count);
         }
     }
 
     chapter_results.sort_by_key(|r| r.index);
-    let mut success_count = 0;
-    let mut fail_count = 0;
-
     for result in &chapter_results {
-        result.log();
         if result.success {
             let chapter = Chapter {
                 title: result.title.clone(),
