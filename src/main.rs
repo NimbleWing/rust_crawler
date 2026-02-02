@@ -15,7 +15,7 @@ const DEFAULT_TITLE_SELECTOR: &str = ".j_chapterName";
 const DEFAULT_CONTENT_SELECTOR: &str = ".read-content p";
 const DEFAULT_CHAPTER_LINK_SELECTOR: &str = ".mulu_list li a";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct Config {
     #[serde(default)]
     crawl: CrawlConfig,
@@ -65,22 +65,52 @@ fn default_content_selector() -> String { DEFAULT_CONTENT_SELECTOR.to_string() }
 fn default_chapter_link_selector() -> String { DEFAULT_CHAPTER_LINK_SELECTOR.to_string() }
 fn default_output_file() -> String { DEFAULT_OUTPUT_FILE.to_string() }
 
+fn get_timestamp() -> String {
+    let now = chrono::Local::now();
+    now.format("[%H:%M:%S]").to_string()
+}
+
+fn find_config_file() -> Option<std::path::PathBuf> {
+    if let Ok(cwd) = std::env::current_dir() {
+        let config_in_cwd = cwd.join("config.toml");
+        if config_in_cwd.exists() {
+            return Some(config_in_cwd);
+        }
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        let exe_dir = exe_path.parent().unwrap_or(&exe_path);
+        let config_in_exe_dir = exe_dir.join("config.toml");
+        if config_in_exe_dir.exists() {
+            return Some(config_in_exe_dir);
+        }
+    }
+
+    None
+}
+
 fn load_config() -> Config {
-    let config_path = "config.toml";
-    let config = match std::fs::read_to_string(config_path) {
-        Ok(content) => {
-            match toml::from_str(&content) {
-                Ok(config) => {
-                    println!("{} 已加载配置文件", get_timestamp());
-                    config
+    let config_path = find_config_file();
+    let config = match config_path {
+        Some(ref path) => {
+            println!("{} 已找到配置文件: {}", get_timestamp(), path.display());
+            match std::fs::read_to_string(path) {
+                Ok(content) => {
+                    match toml::from_str(&content) {
+                        Ok(config) => config,
+                        Err(e) => {
+                            eprintln!("{} 配置文件解析失败，使用默认配置: {}", get_timestamp(), e);
+                            Config::default()
+                        }
+                    }
                 }
                 Err(e) => {
-                    eprintln!("{} 配置文件解析失败，使用默认配置: {}", get_timestamp(), e);
+                    eprintln!("{} 无法读取配置文件，使用默认配置: {}", get_timestamp(), e);
                     Config::default()
                 }
             }
         }
-        Err(_) => {
+        None => {
             println!("{} 未找到 config.toml，使用默认配置", get_timestamp());
             Config::default()
         }
@@ -104,29 +134,6 @@ fn print_config(config: &Config) {
     println!("{}   [output]", get_timestamp());
     println!("{}     file = {}", get_timestamp(), config.output.file);
     println!("{} =========================================", get_timestamp());
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            crawl: CrawlConfig { concurrent_limit: DEFAULT_CONCURRENT_LIMIT },
-            urls: UrlsConfig {
-                base_url: DEFAULT_BASE_URL.to_string(),
-                catalog_url: DEFAULT_CATALOG_URL.to_string(),
-            },
-            selectors: SelectorsConfig {
-                title_selector: DEFAULT_TITLE_SELECTOR.to_string(),
-                content_selector: DEFAULT_CONTENT_SELECTOR.to_string(),
-                chapter_link_selector: DEFAULT_CHAPTER_LINK_SELECTOR.to_string(),
-            },
-            output: OutputConfig { file: DEFAULT_OUTPUT_FILE.to_string() },
-        }
-    }
-}
-
-fn get_timestamp() -> String {
-    let now = chrono::Local::now();
-    now.format("[%H:%M:%S]").to_string()
 }
 
 struct ChapterResult {
